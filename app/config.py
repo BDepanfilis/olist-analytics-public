@@ -1,15 +1,20 @@
 # app/config.py
 import os
-import streamlit as st
 
-def _secret(section, key, default=None):
-    try:
-        return st.secrets[section][key]
-    except Exception:
-        return default
+try:
+    import streamlit as st
+    _SECRETS = dict(st.secrets)  
+except Exception:
+    _SECRETS = {}
+
+DEFAULT_DUCKDB_PATH = (
+    os.getenv("DB_PATH")
+    or _SECRETS.get("db", {}).get("path")
+    or "olist.duckdb"
+)
 
 DEFAULT_SCHEMA = (
-    os.environ.get("DB_SCHEMA")
-    or _secret("db", "schema")
-    or "analytics_marts"  
+    os.getenv("DB_SCHEMA")
+    or _SECRETS.get("db", {}).get("schema")
+    or "analytics_marts"  # safe fallback for local dev
 )
