@@ -1,63 +1,124 @@
-from pathlib import Path
-import os, requests
-import streamlit as st
-from app.config import DB_PATH
+from __future__ import annotations
 
-def _gh_headers(token:str|None):
-    h = {"Accept": "application/vnd.github+json"}
-    if token: h["Authorization"] = f"token {token}"
-    return h
+import os
+import pathlib
+import sys
+from typing import Optional
 
-def _get_secrets():
-    s = st.secrets.get("github", {})
-    return {
-        "owner": s.get("owner"),
-        "repo": s.get("repo"),
-        "tag":  s.get("tag", "latest"),
-        "asset_name": s.get("asset_name", "olist.duckdb"),
-        "token": s.get("token"),
-    }
+try:
+    import streamlit as st  
+except Exception: 
+    st = None  
 
-def _find_asset_id(meta: dict, asset_name: str) -> int | None:
-    for a in meta.get("assets", []):
-        if a.get("name") == asset_name:
-            return a.get("id")
-    return None
+import requests
 
-def ensure_db(path: Path = DB_PATH) -> Path:
-    if path.exists() and path.stat().st_size > 0:
-        return path
 
-    cfg = _get_secrets()
-    owner, repo, tag, token, asset_name = (
-        cfg["owner"], cfg["repo"], cfg["tag"], cfg["token"], cfg["asset_name"]
-    )
-    if not all([owner, repo, tag, token, asset_name]):
-        raise RuntimeError("Missing GitHub secrets. Check .streamlit/secrets.")
+def _get_secret(section: str, key: str, default: Optional[str] = None) -> Optional[str]:
+    """Try st.secrets[section][key], fall back to env var of the same UPPER name, then default."""
+    env_key = key.upper()
+    
+    if st is not None:
+        try:
+            if section and section in st.secrets and key in st.secrets[section]:
+                return str(st.secrets[section][key])
+        except Exception:
+            pass
 
-    # 1) release metadata
-    if tag == "latest":
-        url = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
+    val = os.environ.get(env_key)
+    if val:
+        return val
+    
+    return default
+
+
+def _log(msg: str) -> None:
+    if st is not None:
+        st.write(msg)
     else:
-        url = f"https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}"
-    r = requests.get(url, headers=_gh_headers(token), timeout=60)
+        print(msg)
+
+
+def _release_api(owner: str, repo: str, tag: str) -> str:
+    if tag.lower() == "latest":
+        return f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
+    return f"https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}"
+
+
+def _resolve_asset_url(owner: str, repo: str, tag: str, asset_name: str, token: Optional[str]) -> str:
+    api = _release_api(owner, repo, tag)
+    headers = {"Accept": "application/vnd.github+json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    r = requests.get(api, headers=headers, timeout=30)
     r.raise_for_status()
-    meta = r.json()
+    data = r.json()
+    assets = data.get("assets", []) or []
+    for a in assets:
+        if a.get("name") == asset_name:
+            url = a.get("browser_download_url")
+            if not url:
+                break
+            return url
+    raise RuntimeError(
+        f"Asset '{asset_name}' not found in release '{tag}' of {owner}/{repo}. "
+        f"Available: {[a.get('name') for a in assets]}"
+    )
 
-    asset_id = _find_asset_id(meta, asset_name)
-    if not asset_id:
-        raise RuntimeError(f"Asset '{asset_name}' not found in release '{tag}'")
 
-    # 2) asset binary download
-    dl = f"https://api.github.com/repos/{owner}/{repo}/releases/assets/{asset_id}"
-    headers = _gh_headers(token)
-    headers["Accept"] = "application/octet-stream"
-    with requests.get(dl, headers=headers, stream=True, timeout=600) as res:
-        res.raise_for_status()
-        path.parent.mkdir(parents=True, exist_ok=True)
+def ensure_db() -> str:
+    """
+    Ensure the DuckDB file exists locally.
+    If missing or empty, download from a GitHub Release asset.
+    Returns the absolute path to the DB file.
+    """
+    db_path = _get_secret("db", "db_path", "olist.duckdb")
+    db_path = os.environ.get("DB_PATH", db_path)  
+    db_path = str(db_path)
+    path = pathlib.Path(db_path).expanduser().resolve()
+
+    if path.exists() and path.stat().st_size > 1024:
+        _log(f"✓ Using local DB: {path}")
+        return str(path)
+
+    # Read GitHub settings
+    owner = _get_secret("gh", "owner") or ""
+    repo = _get_secret("gh", "repo") or ""
+    tag = _get_secret("gh", "tag", "latest") or "latest"
+    asset = _get_secret("gh", "asset", "olist.duckdb") or "olist.duckdb"
+    token = _get_secret("gh", "token")  
+
+    if not (owner and repo and token):
+        raise RuntimeError(
+            "Missing GitHub settings. Ensure secrets (or env) provide gh.owner, gh.repo, gh.token."
+        )
+
+    url = _resolve_asset_url(owner, repo, tag, asset, token)
+
+    headers = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    _log(f"↓ Downloading {asset} from {owner}/{repo}@{tag} …")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with requests.get(url, headers=headers, stream=True, timeout=300) as r:
+        r.raise_for_status()
         with open(path, "wb") as f:
-            for chunk in res.iter_content(chunk_size=1024 * 1024):
+            for chunk in r.iter_content(chunk_size=1024 * 1024):
                 if chunk:
                     f.write(chunk)
 
-    return path
+    if path.stat().st_size <= 1024:
+        raise RuntimeError(f"Downloaded file looks too small: {path} ({path.stat().st_size} bytes)")
+
+    _log(f"✓ DB downloaded to: {path}")
+    return str(path)
+
+
+if __name__ == "__main__":
+    try:
+        p = ensure_db()
+        print(p)
+    except Exception as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
