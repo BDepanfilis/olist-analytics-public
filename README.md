@@ -108,25 +108,12 @@ docs/
 └─ Marketing ROI.png
 ```
 
-```md
 ![Overview](docs/Overview.png)
-```
-
-```md
 ![Cohorts](docs/Cohorts.png)
-```
+![LTV & Retention](docs/LTV%20%26%20Retention.png)
+![Returns & Reviews](docs/Returns%20%26%20Reviews.png)
+![Marketing ROI](docs/Marketing%20ROI.png)
 
-```md
-![LTV & Retention](docs/LTV & Retention.png)
-```
-
-```md
-![Returns & Reviews](docs/Returns & Reviews.png)
-```
-
-```md
-![Marketing ROI](docs/Marketing ROI.png)
-```
 ---
 
 ## Updating the Data (Private Repo Flow)
@@ -137,8 +124,6 @@ docs/
    - Create GitHub Release `v2` and upload the new `olist.duckdb` asset.
 3. **Bump the tag**
    - In Streamlit Secrets of the public app: set `gh.tag = "v2"` and rerun the app.
-
-That’s it—the app will fetch the new file automatically.
 
 ---
 
@@ -162,3 +147,4 @@ That’s it—the app will fetch the new file automatically.
 MIT — see `LICENSE` 
 
 ---
+
